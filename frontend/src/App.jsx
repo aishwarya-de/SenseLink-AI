@@ -1,5 +1,5 @@
-```jsx
 import { useEffect, useRef, useState } from "react";
+import HandTracker from "./components/HandTracker";
 
 function App() {
   const [mode, setMode] = useState("sign-to-text");
@@ -9,11 +9,23 @@ function App() {
   const streamRef = useRef(null);
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  const [handCount, setHandCount] = useState(0);
 
   // Start camera
   const startCamera = async () => {
     try {
       setCameraError("");
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setCameraError(
+          "Camera access is not available in this browser. Please use a supported browser over HTTPS or localhost."
+        );
+        return;
+      }
+
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
@@ -21,17 +33,14 @@ function App() {
       });
 
       streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-
       setCameraOn(true);
     } catch (error) {
       console.error("Camera error:", error);
 
       setCameraError(
-        "Unable to access camera. Please allow camera permission in your browser."
+        error.name === "NotAllowedError"
+          ? "Camera permission was denied. Allow camera access in your browser and try again."
+          : "Unable to access the camera. Check that it is connected and not being used by another app."
       );
     }
   };
@@ -47,14 +56,61 @@ function App() {
       videoRef.current.srcObject = null;
     }
 
+    setHandCount(0);
     setCameraOn(false);
   };
+
+  useEffect(() => {
+    if (!cameraOn || !videoRef.current || !streamRef.current) {
+      return undefined;
+    }
+
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    let cancelled = false;
+
+    const attachStream = async () => {
+      const videoTrack = stream.getVideoTracks()[0];
+
+      if (!videoTrack || videoTrack.readyState !== "live") {
+        setCameraError("The camera stream has no active video track.");
+        return;
+      }
+
+      video.srcObject = stream;
+
+      try {
+        await video.play();
+        if (!cancelled && (!video.videoWidth || !video.videoHeight)) {
+          setCameraError(
+            "The camera stream started, but the browser did not provide video frames."
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Camera playback error:", error);
+          setCameraError(
+            "The camera stream is available, but video playback failed. Try restarting the camera."
+          );
+        }
+      }
+    };
+
+    attachStream();
+
+    return () => {
+      cancelled = true;
+      video.pause();
+      video.srcObject = null;
+    };
+  }, [cameraOn]);
 
   // Stop camera when page closes
   useEffect(() => {
     return () => {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
     };
   }, []);
@@ -115,6 +171,9 @@ function App() {
             startCamera={startCamera}
             stopCamera={stopCamera}
             cameraError={cameraError}
+            handCount={handCount}
+            setHandCount={setHandCount}
+            setCameraError={setCameraError}
           />
         ) : (
           <TextToSign />
@@ -134,6 +193,9 @@ function SignToText({
   startCamera,
   stopCamera,
   cameraError,
+  handCount,
+  setHandCount,
+  setCameraError,
 }) {
   return (
     <div className="grid gap-6 lg:grid-cols-3">
@@ -163,17 +225,28 @@ function SignToText({
 
           {/* Camera Preview */}
           <div className="relative flex aspect-video items-center justify-center bg-slate-950">
-            {cameraOn ? (
+            <>
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                className="h-full w-full object-cover"
+                className={`h-full w-full object-cover ${
+                  cameraOn ? "visible" : "invisible"
+                }`}
               />
-            ) : (
-              <div className="text-center">
-                <div className="mb-3 text-5xl">📷</div>
+              {cameraOn && (
+               <HandTracker
+                 videoRef={videoRef}
+                 cameraOn={cameraOn}
+                 onDetection={setHandCount}
+                 onError={setCameraError}
+               />
+              )}
+            </>
+            {!cameraOn && (
+             <div className="text-center">
+               <div className="mb-3 text-5xl">📷</div>
 
                 <p className="text-slate-400">
                   Camera preview
@@ -214,11 +287,13 @@ function SignToText({
 
         <div className="mt-6">
           <p className="text-sm text-slate-400">
-            Detected Gesture
+            Hands Detected
           </p>
 
           <p className="mt-2 text-3xl font-bold">
-            —
+            {cameraOn
+              ? `${handCount} ${handCount === 1 ? "hand" : "hands"} detected`
+              : "No hand detected"}
           </p>
         </div>
 
@@ -314,4 +389,3 @@ function TextToSign() {
 }
 
 export default App;
-```
